@@ -1,0 +1,127 @@
+#pragma kernel CSMain
+
+RWTexture2D<float4> Result;
+
+struct Sphere {
+    float3 position;
+    float radius;
+    float3 colour;
+    float pad;
+};
+
+RWStructuredBuffer<Sphere> _spheres;
+float numSpheres;
+
+// Calculates the length of a float3
+float length(float3 vec) {
+    return sqrt(vec.x * vec.x + vec.y * vec.y + vec.z * vec.z);
+}
+
+// Calculates the distance between a point and a sphere
+float sdfSphere(float3 pos, float3 centre, float radius) {
+    return length(centre - pos) - radius;
+}
+
+// Gets the closest surface
+float sdfScene(float3 pos) {
+    float distToScene = 1000.0;
+    
+    // Spheres
+    for (int i = 0; i < numSpheres; i++) {
+        float distToCircle = sdfSphere(pos, _spheres[i].position, _spheres[i].radius);
+        distToScene = min(distToCircle, distToScene);
+    }
+    
+    return distToScene;
+}
+
+// Gets the colour of the closest surface
+float3 getColour(float3 pos) {
+    float distToScene = 1000.0;
+    float3 colour = float3(0.0, 0.0, 1.0);
+    
+    // Spheres
+    for (int i = 0; i < numSpheres; i++) {
+        float distToCircle = sdfSphere(pos, _spheres[i].position, _spheres[i].radius);
+        if (distToCircle < distToScene) {
+            colour = _spheres[i].colour;
+            distToScene = distToCircle;
+        }
+    }
+
+    return colour;
+}
+
+// Gets the normal of any given position
+float3 getNormal(float3 position) {
+    const float EPS = 0.001;
+    
+    float3 f1 = float3(
+        sdfScene(position + float3(EPS, 0.0, 0.0)),
+        sdfScene(position + float3(0.0, EPS, 0.0)),
+        sdfScene(position + float3(0.0, 0.0, EPS))
+    );
+    
+    float3 f2 = float3(
+        sdfScene(position - float3(EPS, 0.0, 0.0)),
+        sdfScene(position - float3(0.0, EPS, 0.0)),
+        sdfScene(position - float3(0.0, 0.0, EPS))
+    );
+
+    return normalize(f1 - f2);
+}
+
+// Main code, the ray marching
+[numthreads(8,8,1)]
+void CSMain(uint3 id : SV_DispatchThreadID) {
+    // Calculates UV
+    uint width, height;
+    Result.GetDimensions(width, height);    
+    float2 uv = 2 * id.xy / float2(width, width) - float2(1.0, 1.0 / width * height);
+    
+    // Uses UV to calculate ray direction
+    float3 rayDir = normalize(float3(uv, 1.0));
+    
+    // Variables for ray
+    float3 currentPos = float3(0.0, 2.0, 0.0);
+    float marched = 0.0;
+
+    // Variables for colour
+    float3 skyColour = float3(0.6, 0.8, 1.0);
+    float3 colour = skyColour;
+    
+    // The direction of the light (Sun)
+    float3 lightDir = normalize(float3(-1.0, -1.0, 1.0));
+    
+    // For loop that 'marches' through scene
+    for (int i = 0; i < 1000; i++) {
+        // Calculates the distance
+        float dist = sdfScene(currentPos);
+        
+        // If the distance is very small (Ray intersects with surface)
+        if (dist < 0.01) {
+            // Gets surface colour and normal
+            float3 surfaceColour = getColour(currentPos);
+            float3 normal = getNormal(currentPos);
+            
+            // Calculates darkness factor (How dark the colour should be)
+            float dotProduct = dot(normal, lightDir);
+            float darknessFactor = saturate(-dotProduct);
+            
+            colour = surfaceColour * darknessFactor;
+            break;
+        }
+        
+        // If ray has marched too far (no surfaces nearby)
+        if (dist >= 1000.0) {
+            break;
+        }
+        
+        // Marches along the ray
+        currentPos += rayDir * dist;
+        marched += dist;
+    }
+    
+    // Sets the pixel colour
+    Result[id.xy] = float4(colour, 1.0);
+}
